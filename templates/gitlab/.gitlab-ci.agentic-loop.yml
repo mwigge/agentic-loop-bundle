@@ -1,0 +1,70 @@
+stages:
+  - agent
+
+agentic-loop:
+  stage: agent
+  tags:
+    - agentic-loop
+  timeout: 90m
+  resource_group: "agentic-loop-$LOOP_ISSUE_IID"
+  rules:
+    - if: '$LOOP_ISSUE_IID'
+      when: on_success
+    - when: never
+  variables:
+    GIT_STRATEGY: clone
+    GIT_DEPTH: "0"
+    LOOP_ISSUE_ID: "$LOOP_ISSUE_IID"
+    JIRA_ISSUE_KEY: "$LOOP_JIRA_ISSUE"
+  before_script:
+    - test -n "$LOOP_ISSUE_IID"
+    - test -n "$GITLAB_TOKEN"
+    - npm install --prefix .agentic-loop/tools @fission-ai/openspec@1.4.1
+    - python3 -m venv .agentic-loop/python
+    - .agentic-loop/python/bin/pip install -r .agentic-loop/quality-requirements.txt -r .agentic-loop/requirements.txt
+    - |
+      api="$CI_API_V4_URL/projects/$CI_PROJECT_ID"
+      curl --fail --silent --show-error --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
+        "$api/issues/$LOOP_ISSUE_IID" > /tmp/issue.json
+      python3 -c 'import json; d=json.load(open("/tmp/issue.json")); print("# "+d["title"]+"\n\n"+(d.get("description") or ""))' > /tmp/agent-task.md
+      curl --fail --request PUT --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
+        --data-urlencode "add_labels=agent:running" --data-urlencode "remove_labels=agent:ready" \
+        "$api/issues/$LOOP_ISSUE_IID"
+    - git config user.name "agentic-loop"
+    - git config user.email "agentic-loop@$CI_SERVER_HOST"
+    - export AGENT_BRANCH="agent/issue-$LOOP_ISSUE_IID-$CI_PIPELINE_ID"
+    - git switch -c "$AGENT_BRANCH"
+  script:
+    - |
+      jira_args=()
+      [[ -z "$JIRA_ISSUE_KEY" ]] || jira_args=(--jira "$JIRA_ISSUE_KEY")
+      export LOOP_CHANGE="issue-${LOOP_ISSUE_IID}"
+      ./loopctl propose --change "$LOOP_CHANGE" --task-file /tmp/agent-task.md "${jira_args[@]}"
+      ./loopctl run --change "$LOOP_CHANGE" "${jira_args[@]}"
+    - |
+      test -n "$(git status --porcelain)"
+      git add -A
+      git commit -m "agent: address issue #$LOOP_ISSUE_IID"
+      git push "https://oauth2:${GITLAB_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git" "$AGENT_BRANCH"
+      api="$CI_API_V4_URL/projects/$CI_PROJECT_ID"
+      mr_json="$(curl --fail --silent --show-error --request POST --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
+        --data-urlencode "source_branch=$AGENT_BRANCH" \
+        --data-urlencode "target_branch=$CI_DEFAULT_BRANCH" \
+        --data-urlencode "title=Agent loop: issue #$LOOP_ISSUE_IID" \
+        --data-urlencode "description=Automated bounded loop for issue #$LOOP_ISSUE_IID. Human review is required." \
+        "$api/merge_requests")"
+      mr_url="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["web_url"])' <<<"$mr_json")"
+      curl --fail --request PUT --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
+        --data-urlencode "add_labels=agent:review" --data-urlencode "remove_labels=agent:running" \
+        "$api/issues/$LOOP_ISSUE_IID"
+      if [[ -n "$JIRA_ISSUE_KEY" ]]; then
+        ./loopctl jira-comment --issue "$JIRA_ISSUE_KEY" \
+          --text "Agentic loop opened GitLab merge request ${mr_url} for OpenSpec change ${LOOP_CHANGE}."
+      fi
+  after_script:
+    - |
+      if [[ "$CI_JOB_STATUS" != "success" ]]; then
+        curl --request PUT --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
+          --data-urlencode "add_labels=agent:failed" --data-urlencode "remove_labels=agent:running" \
+          "$CI_API_V4_URL/projects/$CI_PROJECT_ID/issues/$LOOP_ISSUE_IID" || true
+      fi

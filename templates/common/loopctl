@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -x "$ROOT/.agentic-loop/python/bin/python" ]]; then
+  export PATH="$ROOT/.agentic-loop/python/bin:$PATH"
+  exec "$ROOT/.agentic-loop/python/bin/python" "$ROOT/.agentic-loop/bin/loopctl.py" "$@"
+fi
+exec python3 "$ROOT/.agentic-loop/bin/loopctl.py" "$@"

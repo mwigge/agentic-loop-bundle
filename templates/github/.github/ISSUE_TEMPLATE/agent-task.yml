@@ -1,0 +1,42 @@
+name: Agent loop task
+description: A bounded task for the repository agent loop
+title: "[agent] "
+labels:
+  - agent:queued
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Keep the task focused and independently verifiable. A maintainer must apply
+        `agent:ready` before the loop can run.
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: Describe the observable behavior that should change.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      placeholder: |
+        - [ ] ...
+        - [ ] ...
+    validations:
+      required: true
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Constraints and context
+      description: Include relevant paths, compatibility requirements, and exclusions.
+  - type: dropdown
+    id: risk
+    attributes:
+      label: Risk
+      options:
+        - low
+        - medium
+        - high - requires additional human review
+    validations:
+      required: true

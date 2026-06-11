@@ -1,0 +1,109 @@
+name: Agentic loop
+
+on:
+  issues:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: Existing issue number
+        required: true
+        type: number
+      jira_issue:
+        description: Optional Jira issue key for evidence synchronization
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: agentic-loop-${{ github.event.issue.number || inputs.issue_number }}
+  cancel-in-progress: false
+
+jobs:
+  run:
+    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'agent:ready'
+    runs-on: [self-hosted, agentic-loop]
+    timeout-minutes: 90
+    env:
+      ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue_number }}
+      LOOP_ISSUE_ID: ${{ github.event.issue.number || inputs.issue_number }}
+      GH_TOKEN: ${{ github.token }}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${{ vars.OTEL_EXPORTER_OTLP_ENDPOINT }}
+      OTEL_EXPORTER_OTLP_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_HEADERS }}
+      AGENTOPS_API_KEY: ${{ secrets.AGENTOPS_API_KEY }}
+      LOOP_AGENT_COMMAND: ${{ vars.LOOP_AGENT_COMMAND }}
+      JIRA_ISSUE_KEY: ${{ inputs.jira_issue }}
+      JIRA_BASE_URL: ${{ vars.JIRA_BASE_URL }}
+      JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+      JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Authorize trigger
+        shell: bash
+        run: |
+          actor="${{ github.triggering_actor }}"
+          permission="$(gh api "repos/${GITHUB_REPOSITORY}/collaborators/${actor}/permission" --jq .permission)"
+          case "$permission" in admin|maintain|write) ;; *) echo "Actor is not trusted: $permission"; exit 1 ;; esac
+
+      - name: Prepare task and branch
+        shell: bash
+        run: |
+          gh issue edit "$ISSUE_NUMBER" --remove-label "agent:ready" --add-label "agent:running"
+          gh issue view "$ISSUE_NUMBER" --json title,body --jq '"# " + .title + "\n\n" + .body' > /tmp/agent-task.md
+          branch="agent/issue-${ISSUE_NUMBER}-${GITHUB_RUN_ID}"
+          git switch -c "$branch"
+          echo "AGENT_BRANCH=$branch" >> "$GITHUB_ENV"
+          git config user.name "agentic-loop[bot]"
+          git config user.email "agentic-loop[bot]@users.noreply.github.com"
+
+      - name: Install telemetry dependencies
+        run: |
+          npm install --prefix .agentic-loop/tools @fission-ai/openspec@1.4.1
+          python3 -m venv .agentic-loop/python
+          .agentic-loop/python/bin/pip install \
+            -r .agentic-loop/quality-requirements.txt \
+            -r .agentic-loop/requirements.txt
+
+      - name: Propose and run bounded loop
+        shell: bash
+        run: |
+          jira_args=()
+          [[ -z "$JIRA_ISSUE_KEY" ]] || jira_args=(--jira "$JIRA_ISSUE_KEY")
+          change="issue-${ISSUE_NUMBER}"
+          ./loopctl propose --change "$change" --task-file /tmp/agent-task.md "${jira_args[@]}"
+          ./loopctl run --change "$change" "${jira_args[@]}"
+
+      - name: Publish pull request
+        shell: bash
+        run: |
+          if git diff --quiet && git diff --cached --quiet; then
+            echo "Agent produced no changes" >&2
+            exit 1
+          fi
+          git add -A
+          git commit -m "agent: address issue #${ISSUE_NUMBER}"
+          git push --set-upstream origin "$AGENT_BRANCH"
+          pr_url="$(gh pr create --base "${{ github.event.repository.default_branch }}" \
+            --head "$AGENT_BRANCH" --title "Agent loop: issue #${ISSUE_NUMBER}" \
+            --body "Automated bounded loop for #${ISSUE_NUMBER}. Human review is required.")"
+          gh issue edit "$ISSUE_NUMBER" --remove-label "agent:running" --add-label "agent:review"
+          gh issue comment "$ISSUE_NUMBER" --body "Loop completed and opened ${pr_url}"
+          if [[ -n "$JIRA_ISSUE_KEY" ]]; then
+            ./loopctl jira-comment --issue "$JIRA_ISSUE_KEY" \
+              --text "Agentic loop opened GitHub pull request ${pr_url} for OpenSpec change issue-${ISSUE_NUMBER}."
+          fi
+
+      - name: Mark failed
+        if: failure()
+        shell: bash
+        run: |
+          gh issue edit "$ISSUE_NUMBER" --remove-label "agent:running" --add-label "agent:failed" || true
+          gh issue comment "$ISSUE_NUMBER" --body "The agent loop failed. Inspect workflow run ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID} and the local runner trace." || true

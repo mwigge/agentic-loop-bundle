@@ -1,0 +1,5 @@
+name: agentic-loop-signoz
+
+# signoz.sh downloads this pinned include before invoking Docker Compose.
+include:
+  - path: .runtime/v0.128.0/deploy/docker/docker-compose.yaml
