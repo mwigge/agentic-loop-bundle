@@ -91,12 +91,11 @@ if [[ -z "$SOURCE_DIR" ]]; then
   command -v tar >/dev/null 2>&1 || die "tar is required"
   TEMP_DIR="$(mktemp -d)"
   archive="$TEMP_DIR/bundle.tar.gz"
-  url="https://github.com/$REPOSITORY/archive/refs/heads/$REF.tar.gz"
-  if [[ "$REF" == v* || "$REF" =~ ^[0-9]+\.[0-9]+ ]]; then
-    url="https://github.com/$REPOSITORY/archive/refs/tags/$REF.tar.gz"
-  fi
+  url_heads="https://github.com/$REPOSITORY/archive/refs/heads/$REF.tar.gz"
+  url_tags="https://github.com/$REPOSITORY/archive/refs/tags/$REF.tar.gz"
   printf 'Downloading %s at %s...\n' "$REPOSITORY" "$REF"
-  curl -fsSL "$url" -o "$archive"
+  curl -fsSL "$url_heads" -o "$archive" || curl -fsSL "$url_tags" -o "$archive" \
+    || die "could not download $REPOSITORY at $REF"
   mkdir -p "$TEMP_DIR/source"
   tar -xzf "$archive" -C "$TEMP_DIR/source" --strip-components=1
   SOURCE_DIR="$TEMP_DIR/source"

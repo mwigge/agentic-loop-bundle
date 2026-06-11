@@ -42,7 +42,7 @@ installation unless `--force` is supplied; replaced files are backed up beneath
 | Path | Purpose |
 |---|---|
 | `.agentic-loop/loop.json` | Retry, timeout, review, OpenSpec, and telemetry policy |
-| `.agentic-loop/prompts/` | Proposer, implementer, and reviewer contracts |
+| `.agentic-loop/prompts/` | Proposer, tester, implementer, and reviewer contracts |
 | `.agentic-loop/bin/` | Loop runtime, quality gate, verifier, and Docker smoke runner |
 | `.agentic-loop/docker/` | Repository-customizable smoke-test image |
 | `loopctl` | Repository-local command |

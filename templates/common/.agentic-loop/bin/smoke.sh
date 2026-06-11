@@ -6,7 +6,8 @@ command -v docker >/dev/null 2>&1 || {
   exit 1
 }
 
-image="agentic-loop-smoke:$(basename "$PWD" | tr -cs '[:alnum:]_.-' '-')"
+slug="$(basename "$PWD" | tr -c '[:alnum:]_.-' '-' | sed -e 's/-*$//' -e 's/^[.-]*//')"
+image="agentic-loop-smoke:${slug:-repo}"
 docker build -f .agentic-loop/docker/Dockerfile -t "$image" .agentic-loop
 docker run --rm \
   --user "$(id -u):$(id -g)" \

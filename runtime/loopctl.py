@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import pathlib
+import re
 import shlex
 import shutil
 import subprocess
@@ -62,6 +63,7 @@ def deep_get(value: dict[str, Any], path: str, default: Any = None) -> Any:
 class JsonlTelemetry:
     def __init__(self, run_id: str, run_dir: pathlib.Path, attributes: dict[str, Any]):
         self.run_id = run_id
+        self.trace_id = hashlib.sha256(run_id.encode()).hexdigest()[:32]
         self.path = run_dir / "telemetry.jsonl"
         self.attributes = attributes
 
@@ -74,7 +76,7 @@ class JsonlTelemetry:
         record = {
             "timestamp": now(),
             "event": "span.start",
-            "trace_id": self.run_id.replace("-", "")[:32],
+            "trace_id": self.trace_id,
             "span_id": span_id,
             "name": name,
             "attributes": {**self.attributes, **(attributes or {})},
@@ -103,7 +105,7 @@ class JsonlTelemetry:
             {
                 "timestamp": now(),
                 "event": name,
-                "trace_id": self.run_id.replace("-", "")[:32],
+                "trace_id": self.trace_id,
                 "attributes": {**self.attributes, **(attributes or {})},
             }
         )
@@ -447,18 +449,25 @@ def render_prompt(
 ) -> str:
     prompt_path = LOOP_DIR / "prompts" / f"{stage}.md"
     template = prompt_path.read_text(encoding="utf-8")
+    # plan.md is written each run for user-customized prompts; no shipped
+    # template currently substitutes {{PLAN}}.
     plan = read_optional(run_dir / "plan.md")
     verification = read_optional(run_dir / "verification.txt")
-    return (
-        template.replace("{{TASK}}", task)
-        .replace("{{PLAN}}", plan)
-        .replace("{{VERIFICATION}}", verification)
-        .replace("{{ATTEMPT}}", str(attempt))
-        .replace("{{RUN_ID}}", run_dir.name)
-        .replace("{{CHANGE}}", change)
-        .replace("{{SPEC_CONTEXT}}", spec_context)
-        .replace("{{PARENT_CHANGE}}", parent_change)
-        .replace("{{CURRENT_TASK}}", current_task)
+    values = {
+        "TASK": task,
+        "PLAN": plan,
+        "VERIFICATION": verification,
+        "ATTEMPT": str(attempt),
+        "RUN_ID": run_dir.name,
+        "CHANGE": change,
+        "SPEC_CONTEXT": spec_context,
+        "PARENT_CHANGE": parent_change,
+        "CURRENT_TASK": current_task,
+    }
+    return re.sub(
+        r"\{\{(" + "|".join(values) + r")\}\}",
+        lambda match: values[match.group(1)],
+        template,
     )
 
 
@@ -479,15 +488,17 @@ def policy_digest() -> str:
     return digest.hexdigest()
 
 
-def workspace_status() -> str:
-    process = subprocess.run(
-        ["git", "status", "--porcelain=v1", "--untracked-files=all"],
-        cwd=ROOT,
-        text=True,
-        capture_output=True,
-        check=True,
-    )
-    return process.stdout
+SKIP_DIR_NAMES = {
+    ".git",
+    "node_modules",
+    "__pycache__",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".mypy_cache",
+    ".tox",
+    ".venv",
+    "venv",
+}
 
 
 def workspace_hashes() -> dict[str, str]:
@@ -496,18 +507,33 @@ def workspace_hashes() -> dict[str, str]:
         if not path.is_file():
             continue
         relative = path.relative_to(ROOT)
-        if relative.parts[0] == ".git":
+        if any(part in SKIP_DIR_NAMES for part in relative.parts):
             continue
-        if relative.parts[:2] == (".agentic-loop", "runs"):
+        if relative.parts[:2] in (
+            (".agentic-loop", "runs"),
+            (".agentic-loop", "python"),
+            (".agentic-loop", "tools"),
+            (".agentic-loop", "backups"),
+        ):
+            continue
+        if relative.parts == (".agentic-loop", "state.json"):
             continue
         values[str(relative)] = hashlib.sha256(path.read_bytes()).hexdigest()
     return values
 
 
 def is_test_path(path: str) -> bool:
-    lowered = f"/{path.lower()}"
-    markers = ("/test/", "/tests/", ".test.", ".spec.", "_test.", "test_")
-    return any(marker in lowered for marker in markers)
+    parts = pathlib.PurePosixPath(path.lower()).parts
+    if any(part in ("test", "tests", "__tests__") for part in parts[:-1]):
+        return True
+    name = parts[-1] if parts else ""
+    stem = name.split(".")[0]
+    return (
+        stem.startswith("test_")
+        or stem.endswith("_test")
+        or ".test." in name
+        or ".spec." in name
+    )
 
 
 def run_agent(
@@ -697,11 +723,12 @@ def command_propose(args: argparse.Namespace) -> int:
                 )
             run_openspec("validate", change)
         if args.jira:
-            jira_comment(
-                args.jira,
-                f"Agentic loop proposal `{change}` is apply-ready. "
-                f"Artifacts: openspec/changes/{change}/",
-            )
+            with contextlib.suppress(Exception):
+                jira_comment(
+                    args.jira,
+                    f"Agentic loop proposal `{change}` is apply-ready. "
+                    f"Artifacts: openspec/changes/{change}/",
+                )
         print(change)
         return 0
     except Exception:
@@ -728,7 +755,7 @@ def command_run(args: argparse.Namespace) -> int:
         )
     run_openspec("validate", change)
     spec_context = openspec_context(change)
-    task = spec_context
+    task = f"Implement the OpenSpec change `{change}` as specified in the context below."
     change_metadata_path = change_dir / "agentic-loop.json"
     change_metadata = (
         load_json(change_metadata_path) if change_metadata_path.exists() else {}
@@ -739,7 +766,7 @@ def command_run(args: argparse.Namespace) -> int:
     run_dir = RUNS_DIR / run_id
     run_dir.mkdir(parents=True, mode=0o700, exist_ok=False)
     run_dir.chmod(0o700)
-    write_text(run_dir / "task.md", task.rstrip() + "\n")
+    write_text(run_dir / "task.md", spec_context.rstrip() + "\n")
     repo = (
         os.environ.get("CI_PROJECT_PATH")
         or os.environ.get("GITHUB_REPOSITORY")
@@ -787,17 +814,20 @@ def command_run(args: argparse.Namespace) -> int:
     verification_command = deep_get(
         config, "verification.command", "./.agentic-loop/bin/verify.sh"
     )
+    test_command = deep_get(
+        config, "verification.test_command", "./.agentic-loop/bin/test.sh"
+    )
     initial_policy_digest = policy_digest()
-    test_command = "./.agentic-loop/bin/test.sh"
 
     try:
         with telemetry.span("loop.run", {"agentic_loop.max_attempts": max_attempts}):
             write_text(run_dir / "plan.md", spec_context)
             if jira_issue:
-                jira_comment(
-                    jira_issue,
-                    f"Agentic loop `{run_id}` started for OpenSpec change `{change}`.",
-                )
+                with contextlib.suppress(Exception):
+                    jira_comment(
+                        jira_issue,
+                        f"Agentic loop `{run_id}` started for OpenSpec change `{change}`.",
+                    )
 
             slice_number = 0
             while True:
@@ -809,6 +839,7 @@ def command_run(args: argparse.Namespace) -> int:
                 tasks_path = openspec_change_dir(change) / "tasks.md"
                 tasks_before_slice = tasks_path.read_text(encoding="utf-8")
                 tasks_mode = tasks_path.stat().st_mode
+                write_text(run_dir / "verification.txt", "")
                 ctx.update(stage="test", slice=slice_number, current_task=current_task)
                 baseline_result = run_verification(
                     telemetry,
@@ -863,9 +894,14 @@ def command_run(args: argparse.Namespace) -> int:
                     run_dir / f"slice-{slice_number}-red-result.txt",
                     verify_timeout,
                 )
-                if red_result != 1:
+                if red_result == 0:
                     raise RuntimeError(
                         f"new test did not fail as expected for slice '{current_task}'"
+                    )
+                if red_result != 1:
+                    raise RuntimeError(
+                        f"test command errored (exit {red_result}) during the red "
+                        f"stage; see slice-{slice_number}-red-result.txt"
                     )
                 slice_succeeded = False
                 for attempt in range(1, max_attempts + 1):
@@ -922,11 +958,18 @@ def command_run(args: argparse.Namespace) -> int:
                         )
 
                     ctx.update(stage="verify")
+                    verification_output_path = (
+                        run_dir / f"slice-{slice_number}-verification-{attempt}.txt"
+                    )
                     verify_result = run_verification(
                         telemetry,
                         verification_command,
-                        run_dir / f"slice-{slice_number}-verification-{attempt}.txt",
+                        verification_output_path,
                         verify_timeout,
+                    )
+                    write_text(
+                        run_dir / "verification.txt",
+                        read_optional(verification_output_path),
                     )
                     if (
                         verify_result == 0
@@ -940,7 +983,6 @@ def command_run(args: argparse.Namespace) -> int:
                             },
                         )
                         spec_context = openspec_context(change)
-                        task = spec_context
                         slice_succeeded = True
                         break
                     reason = (
@@ -956,6 +998,9 @@ def command_run(args: argparse.Namespace) -> int:
                             "agentic_loop.slice": slice_number,
                         },
                     )
+                    # Only the task checklist is reset between attempts; working-tree
+                    # code changes from the failed attempt are deliberately retained
+                    # so the next attempt can build on partial progress.
                     tasks_path.write_text(tasks_before_slice, encoding="utf-8")
                     tasks_path.chmod(tasks_mode)
                 if not slice_succeeded:
@@ -973,7 +1018,7 @@ def command_run(args: argparse.Namespace) -> int:
                     change=change,
                     spec_context=spec_context,
                 )
-                status_before_review = workspace_status()
+                hashes_before_review = workspace_hashes()
                 review_result = run_agent(
                     telemetry,
                     command,
@@ -984,7 +1029,7 @@ def command_run(args: argparse.Namespace) -> int:
                 )
                 if review_result and deep_get(config, "review.required", False):
                     raise RuntimeError("reviewer agent failed")
-                if workspace_status() != status_before_review:
+                if workspace_hashes() != hashes_before_review:
                     raise RuntimeError(
                         "reviewer modified the working tree during a read-only stage"
                     )
@@ -993,14 +1038,15 @@ def command_run(args: argparse.Namespace) -> int:
             telemetry.event("loop.outcome", {"agentic_loop.outcome": "succeeded"})
             success = True
             if jira_issue:
-                jira_comment(
-                    jira_issue,
-                    f"Agentic loop `{run_id}` completed for OpenSpec change `{change}`. "
-                    "Verification passed; review branch publication follows in the repository workflow.",
-                )
+                with contextlib.suppress(Exception):
+                    jira_comment(
+                        jira_issue,
+                        f"Agentic loop `{run_id}` completed for OpenSpec change `{change}`. "
+                        "Verification passed; review branch publication follows in the repository workflow.",
+                    )
             print(run_id)
             return 0
-    except (RuntimeError, subprocess.TimeoutExpired) as exc:
+    except Exception as exc:
         ctx.update(stage="failed", status="failed", error=str(exc))
         telemetry.event(
             "loop.outcome",
@@ -1041,6 +1087,13 @@ def command_doctor(_: argparse.Namespace) -> int:
             str(verify),
         )
     )
+    checks.append(
+        (
+            "docker",
+            shutil.which("docker") is not None,
+            "required by the default per-slice smoke gate (bin/smoke.sh)",
+        )
+    )
     endpoint = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "")
     checks.append(
         ("OTLP endpoint", bool(endpoint), endpoint or "optional; JSONL fallback active")
@@ -1056,7 +1109,8 @@ def command_doctor(_: argparse.Namespace) -> int:
 def command_telemetry_test(_: argparse.Namespace) -> int:
     run_id = f"telemetry-{uuid.uuid4()}"
     run_dir = RUNS_DIR / run_id
-    run_dir.mkdir(parents=True)
+    run_dir.mkdir(parents=True, mode=0o700)
+    run_dir.chmod(0o700)
     fallback = JsonlTelemetry(run_id, run_dir, {"agentic_loop.test": True})
     telemetry = OpenTelemetry(fallback, "agentic-loop-telemetry-test")
     with telemetry.span("loop.telemetry.test"):
@@ -1119,7 +1173,7 @@ def main() -> int:
     args = build_parser().parse_args()
     try:
         return args.handler(args)
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
+    except (RuntimeError, subprocess.TimeoutExpired, OSError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 

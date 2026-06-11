@@ -84,7 +84,7 @@ jobs:
       - name: Publish pull request
         shell: bash
         run: |
-          if git diff --quiet && git diff --cached --quiet; then
+          if [[ -z "$(git status --porcelain)" ]]; then
             echo "Agent produced no changes" >&2
             exit 1
           fi

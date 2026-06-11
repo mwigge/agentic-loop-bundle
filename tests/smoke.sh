@@ -55,6 +55,7 @@ PY
   assert_file "result.txt"
   assert_file ".agentic-loop/runs/$run_id/state.json"
   assert_file ".agentic-loop/runs/$run_id/telemetry.jsonl"
+  assert_file ".agentic-loop/runs/$run_id/verification.txt"
   grep -q '"status": "succeeded"' ".agentic-loop/runs/$run_id/state.json"
   grep -q '"name":"loop.run"' ".agentic-loop/runs/$run_id/telemetry.jsonl"
   test -z "$(git status --porcelain -- .agentic-loop/runs .agentic-loop/state.json)"

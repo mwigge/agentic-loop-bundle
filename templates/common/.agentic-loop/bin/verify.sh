@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-python3 .agentic-loop/bin/quality_gate.py
-./.agentic-loop/bin/test.sh
-
 if [[ "${LOOP_IN_CONTAINER:-0}" != "1" ]]; then
   exec .agentic-loop/bin/smoke.sh
 fi
+
+python3 .agentic-loop/bin/quality_gate.py
 
 if [[ -x ./scripts/verify.sh ]]; then
   exec ./scripts/verify.sh

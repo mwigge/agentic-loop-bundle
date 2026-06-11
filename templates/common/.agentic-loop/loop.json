@@ -10,7 +10,8 @@
     "verify_timeout_seconds": 900
   },
   "verification": {
-    "command": "./.agentic-loop/bin/verify.sh"
+    "command": "./.agentic-loop/bin/verify.sh",
+    "test_command": "./.agentic-loop/bin/test.sh"
   },
   "review": {
     "enabled": true,

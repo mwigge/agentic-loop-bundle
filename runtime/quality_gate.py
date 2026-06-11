@@ -30,7 +30,6 @@ SOURCE_SUFFIXES = {
     ".ts",
     ".tsx",
 }
-TEST_MARKERS = ("/test/", "/tests/", ".test.", ".spec.", "_test.", "test_")
 ATTRIBUTION_PATTERNS = (
     re.compile(r"generated (?:by|with) (?:ai|chatgpt|claude|copilot)", re.I),
     re.compile(
@@ -42,10 +41,23 @@ ATTRIBUTION_PATTERNS = (
 )
 
 
-def run(command: list[str], *, optional: bool = False) -> None:
-    if optional and shutil.which(command[0]) is None:
-        print(f"[skip] {' '.join(command)} ({command[0]} not installed)")
-        return
+def is_test_path(path: str) -> bool:
+    parts = pathlib.PurePosixPath(path.lower()).parts
+    if any(part in ("test", "tests", "__tests__") for part in parts[:-1]):
+        return True
+    name = parts[-1] if parts else ""
+    stem = name.split(".")[0]
+    return (
+        stem.startswith("test_")
+        or stem.endswith("_test")
+        or ".test." in name
+        or ".spec." in name
+    )
+
+
+def run(command: list[str]) -> None:
+    if shutil.which(command[0]) is None:
+        raise RuntimeError(f"required tool is not installed: {command[0]}")
     print(f"[run] {' '.join(command)}")
     subprocess.run(command, cwd=ROOT, check=True)
 
@@ -70,13 +82,9 @@ def check_tdd(paths: list[str]) -> None:
         for path in paths
         if pathlib.Path(path).suffix in SOURCE_SUFFIXES
         and ".agentic-loop/" not in path
-        and not any(marker in f"/{path.lower()}" for marker in TEST_MARKERS)
+        and not is_test_path(path)
     ]
-    test_changes = [
-        path
-        for path in paths
-        if any(marker in f"/{path.lower()}" for marker in TEST_MARKERS)
-    ]
+    test_changes = [path for path in paths if is_test_path(path)]
     if source_changes and not test_changes:
         raise RuntimeError(
             "TDD gate failed: source changed without a changed test file. "
@@ -123,6 +131,8 @@ def project_checks() -> None:
         if "typecheck" in scripts:
             run(["npm", "run", "typecheck"])
     if (ROOT / "go.mod").exists():
+        if shutil.which("gofmt") is None:
+            raise RuntimeError("required tool is not installed: gofmt")
         output = subprocess.run(
             ["gofmt", "-l", "."], cwd=ROOT, text=True, capture_output=True, check=True
         ).stdout.strip()
