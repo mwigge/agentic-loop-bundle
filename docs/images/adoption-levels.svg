@@ -1,8 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="500" viewBox="0 0 1200 500" role="img" aria-labelledby="title desc">
-  <title id="title">Three adoption levels</title><desc id="desc">Teams progress from report-only loops to assisted changes and bounded automation.</desc>
-  <style>.bg{fill:#101827}.card{fill:#17243a;stroke:#39506f;stroke-width:2}.n{fill:#44b5a7;font:bold 54px Arial}.h{fill:#fff;font:bold 23px Arial}.p{fill:#bac7d9;font:18px Arial}.title{fill:#fff;font:bold 32px Arial}</style>
-  <rect class="bg" width="1200" height="500" rx="22"/><text class="title" x="55" y="65">Adopt loops in controlled steps</text>
-  <rect class="card" x="55" y="115" width="330" height="300" rx="18"/><text class="n" x="85" y="185">1</text><text class="h" x="155" y="170">Report</text><text class="p" x="85" y="235">Triage and explain</text><text class="p" x="85" y="275">No repository writes</text><text class="p" x="85" y="315">Measure usefulness</text>
-  <rect class="card" x="435" y="115" width="330" height="300" rx="18"/><text class="n" x="465" y="185">2</text><text class="h" x="535" y="170">Assist</text><text class="p" x="465" y="235">Create review branches</text><text class="p" x="465" y="275">Run deterministic checks</text><text class="p" x="465" y="315">Require human merge</text>
-  <rect class="card" x="815" y="115" width="330" height="300" rx="18"/><text class="n" x="845" y="185">3</text><text class="h" x="915" y="170">Automate</text><text class="p" x="845" y="235">Allowlisted task classes</text><text class="p" x="845" y="275">Budgets and escalation</text><text class="p" x="845" y="315">Continuous observation</text>
-</svg>

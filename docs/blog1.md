@@ -8,13 +8,13 @@ An engineering loop changes the unit of work. The team defines the
 specification, task graph, quality gates, evidence, limits, and human handoff.
 The agent operates inside that system.
 
-![A bounded repository loop](images/loop-architecture.svg)
+![A bounded repository loop](images/loop-architecture.png)
 
 ## Start with a durable specification
 
 This bundle requires an OpenSpec change before implementation.
 
-![OpenSpec-centered loops](images/specification-loop.svg)
+![OpenSpec-centered loops](images/specification-loop.png)
 
 The proposal records why the change exists. Behavioral specifications define
 requirements and scenarios. The design describes the target architecture,
@@ -104,7 +104,7 @@ produces code. Important questions remain hidden:
 - How many retries were required?
 - Did a subloop drift from its parent design?
 
-![Loop observability](images/observability-flow.svg)
+![Loop observability](images/observability-flow.png)
 
 The bundle records proposal, run, slice, model, verification, retry, outcome,
 repository, Jira, and parent-change correlations. JSONL evidence always works
@@ -135,7 +135,7 @@ orchestration; it does not take merge authority away from the team.
 
 ## Adopt in controlled steps
 
-![Three adoption levels](images/adoption-levels.svg)
+![Three adoption levels](images/adoption-levels.png)
 
 Start with report-only tasks. Move to review branches for narrow work with a
 strong verifier. Consider more automation only for task classes with stable

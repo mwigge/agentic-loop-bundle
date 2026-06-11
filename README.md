@@ -8,9 +8,9 @@ specifications, small implementation slices, cumulative verification,
 independent review, and a pull or merge request. Jira can mirror the work and
 evidence without becoming a second technical source of truth.
 
-![Agentic loop architecture](docs/images/loop-architecture.svg)
+![Agentic loop architecture](docs/images/loop-architecture.png)
 
-![OpenSpec-centered loops](docs/images/specification-loop.svg)
+![OpenSpec-centered loops](docs/images/specification-loop.png)
 
 ## Quick start
 
@@ -199,7 +199,7 @@ or failure, and the final PR/MR URL. GitHub workflow dispatch accepts
 
 ## Observability
 
-![Loop observability flow](docs/images/observability-flow.svg)
+![Loop observability flow](docs/images/observability-flow.png)
 
 Every run writes private JSONL evidence. With telemetry dependencies installed,
 it also emits GenAI OpenTelemetry spans:
