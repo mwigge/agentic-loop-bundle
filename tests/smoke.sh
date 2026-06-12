@@ -50,8 +50,13 @@ PY
   LOOP_AGENT_COMMAND="./fake-agent.sh" ./loopctl doctor
   LOOP_AGENT_COMMAND="./fake-agent.sh" ./loopctl propose \
     --change fixture-change --task "Create the fixture result"
-  run_id="$(LOOP_AGENT_COMMAND="./fake-agent.sh" \
+  output="$(LOOP_AGENT_COMMAND="./fake-agent.sh" \
     ./loopctl run --change fixture-change)"
+  run_id="$(head -n1 <<<"$output")"
+  [[ "$(tail -n1 <<<"$output")" == "remaining=0" ]] || {
+    echo "expected remaining=0 for a completed change, got: $(tail -n1 <<<"$output")" >&2
+    exit 1
+  }
   assert_file "result.txt"
   assert_file ".agentic-loop/runs/$run_id/state.json"
   assert_file ".agentic-loop/runs/$run_id/telemetry.jsonl"
@@ -66,6 +71,70 @@ PY
     echo "runtime allowed protected loop policy to change" >&2
     exit 1
   fi
+)
+
+slices="$TMP/slices"
+setup_repo "$slices"
+AGENTIC_LOOP_SOURCE_DIR="$ROOT" "$ROOT/install.sh" --github --target "$slices" >/dev/null
+
+cp "$ROOT/tests/fake-agent.sh" "$slices/fake-agent.sh"
+chmod +x "$slices/fake-agent.sh"
+mkdir -p "$slices/tests"
+printf 'def test_baseline():\n    assert True\n' > "$slices/tests/test_baseline.py"
+mkdir -p "$slices/scripts"
+cp "$ROOT/tests/fake-project-test.sh" "$slices/scripts/test.sh"
+chmod +x "$slices/scripts/test.sh"
+(
+  cd "$slices"
+  export OPENSPEC_COMMAND="$ROOT/tests/fake-openspec.py"
+  python3 - <<'PY'
+import json
+path = ".agentic-loop/loop.json"
+config = json.load(open(path))
+config["verification"]["command"] = "true"
+open(path, "w").write(json.dumps(config, indent=2) + "\n")
+PY
+  LOOP_AGENT_COMMAND="./fake-agent.sh" ./loopctl propose \
+    --change slice-fixture --task "Create the fixture result"
+
+  output="$(LOOP_AGENT_COMMAND="./fake-agent.sh" \
+    ./loopctl run --change slice-fixture --max-slices 1)"
+  [[ "$(tail -n1 <<<"$output")" == "remaining=1" ]] || {
+    echo "expected remaining=1 after one slice, got: $(tail -n1 <<<"$output")" >&2
+    exit 1
+  }
+  assert_file "result.txt"
+  [[ "$(grep -c '^- \[x\]' openspec/changes/slice-fixture/tasks.md)" == "1" ]] || {
+    echo "expected exactly one completed task after one slice" >&2
+    exit 1
+  }
+  status_json="$(./loopctl status --change slice-fixture --json)"
+  python3 - "$status_json" <<'PY'
+import json
+import sys
+
+data = json.loads(sys.argv[1])
+assert data["remaining"] == 1, data
+assert data["is_complete"] is False, data
+assert len(data["pending_tasks"]) == 1, data
+PY
+
+  output="$(LOOP_AGENT_COMMAND="./fake-agent.sh" \
+    ./loopctl run --change slice-fixture --max-slices 1)"
+  [[ "$(tail -n1 <<<"$output")" == "remaining=0" ]] || {
+    echo "expected remaining=0 after the final slice, got: $(tail -n1 <<<"$output")" >&2
+    exit 1
+  }
+  status_json="$(./loopctl status --change slice-fixture --json)"
+  python3 - "$status_json" <<'PY'
+import json
+import sys
+
+data = json.loads(sys.argv[1])
+assert data["remaining"] == 0, data
+assert data["is_complete"] is True, data
+assert data["pending_tasks"] == [], data
+PY
 )
 
 gitlab="$TMP/gitlab"

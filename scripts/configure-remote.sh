@@ -9,7 +9,9 @@ labels=(
   "agent:queued|6f42c1|Task proposed for an agent loop"
   "agent:ready|0e8a16|Approved by a maintainer"
   "agent:running|1d76db|Agent loop is active"
-  "agent:review|bf8700|Loop completed; human review required"
+  "agent:spec-review|fbca04|Spec proposal pull request needs review"
+  "agent:review|bf8700|Slice pull request needs human review"
+  "agent:done|0e8a16|All slices implemented and published"
   "agent:failed|d73a4a|Loop needs human attention"
 )
 

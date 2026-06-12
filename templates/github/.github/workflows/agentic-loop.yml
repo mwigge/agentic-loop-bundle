@@ -13,21 +13,24 @@ on:
         description: Optional Jira issue key for evidence synchronization
         required: false
         type: string
+  pull_request:
+    types: [closed]
 
 permissions:
   contents: write
   issues: write
   pull-requests: write
 
-concurrency:
-  group: agentic-loop-${{ github.event.issue.number || inputs.issue_number }}
-  cancel-in-progress: false
-
 jobs:
-  run:
+  # Opens a pull request containing only the OpenSpec proposal, specs, design,
+  # and task breakdown for human review. No implementation runs in this job.
+  propose:
     if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'agent:ready'
     runs-on: [self-hosted, agentic-loop]
-    timeout-minutes: 90
+    timeout-minutes: 30
+    concurrency:
+      group: agentic-loop-${{ github.event.issue.number || inputs.issue_number }}
+      cancel-in-progress: false
     env:
       ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue_number }}
       LOOP_ISSUE_ID: ${{ github.event.issue.number || inputs.issue_number }}
@@ -53,18 +56,18 @@ jobs:
           permission="$(gh api "repos/${GITHUB_REPOSITORY}/collaborators/${actor}/permission" --jq .permission)"
           case "$permission" in admin|maintain|write) ;; *) echo "Actor is not trusted: $permission"; exit 1 ;; esac
 
-      - name: Prepare task and branch
+      - name: Prepare branch
         shell: bash
         run: |
           gh issue edit "$ISSUE_NUMBER" --remove-label "agent:ready" --add-label "agent:running"
           gh issue view "$ISSUE_NUMBER" --json title,body --jq '"# " + .title + "\n\n" + .body' > /tmp/agent-task.md
-          branch="agent/issue-${ISSUE_NUMBER}-${GITHUB_RUN_ID}"
+          branch="agent/issue-${ISSUE_NUMBER}-spec"
           git switch -c "$branch"
           echo "AGENT_BRANCH=$branch" >> "$GITHUB_ENV"
           git config user.name "agentic-loop[bot]"
           git config user.email "agentic-loop[bot]@users.noreply.github.com"
 
-      - name: Install telemetry dependencies
+      - name: Install dependencies
         run: |
           npm install --prefix .agentic-loop/tools @fission-ai/openspec@1.4.1
           python3 -m venv .agentic-loop/python
@@ -72,33 +75,33 @@ jobs:
             -r .agentic-loop/quality-requirements.txt \
             -r .agentic-loop/requirements.txt
 
-      - name: Propose and run bounded loop
+      - name: Propose OpenSpec change
         shell: bash
         run: |
           jira_args=()
           [[ -z "$JIRA_ISSUE_KEY" ]] || jira_args=(--jira "$JIRA_ISSUE_KEY")
           change="issue-${ISSUE_NUMBER}"
           ./loopctl propose --change "$change" --task-file /tmp/agent-task.md "${jira_args[@]}"
-          ./loopctl run --change "$change" "${jira_args[@]}"
+          echo "CHANGE=$change" >> "$GITHUB_ENV"
 
-      - name: Publish pull request
+      - name: Publish spec pull request
         shell: bash
         run: |
-          if [[ -z "$(git status --porcelain)" ]]; then
-            echo "Agent produced no changes" >&2
+          if [[ -z "$(git status --porcelain -- "openspec/changes/$CHANGE")" ]]; then
+            echo "Proposer produced no OpenSpec artifacts" >&2
             exit 1
           fi
-          git add -A
-          git commit -m "agent: address issue #${ISSUE_NUMBER}"
+          git add "openspec/changes/$CHANGE"
+          git commit -m "agent: propose ${CHANGE} for issue #${ISSUE_NUMBER}"
           git push --set-upstream origin "$AGENT_BRANCH"
           pr_url="$(gh pr create --base "${{ github.event.repository.default_branch }}" \
-            --head "$AGENT_BRANCH" --title "Agent loop: issue #${ISSUE_NUMBER}" \
-            --body "Automated bounded loop for #${ISSUE_NUMBER}. Human review is required.")"
-          gh issue edit "$ISSUE_NUMBER" --remove-label "agent:running" --add-label "agent:review"
-          gh issue comment "$ISSUE_NUMBER" --body "Loop completed and opened ${pr_url}"
+            --head "$AGENT_BRANCH" --title "Agent spec: issue #${ISSUE_NUMBER}" \
+            --body "Automated OpenSpec proposal for #${ISSUE_NUMBER}. Review the proposal, specs, design, and task breakdown. Merging this pull request starts implementation, one slice per pull request.")"
+          gh issue edit "$ISSUE_NUMBER" --remove-label "agent:running" --add-label "agent:spec-review"
+          gh issue comment "$ISSUE_NUMBER" --body "Loop proposed \`${CHANGE}\` and opened ${pr_url} for spec review."
           if [[ -n "$JIRA_ISSUE_KEY" ]]; then
             ./loopctl jira-comment --issue "$JIRA_ISSUE_KEY" \
-              --text "Agentic loop opened GitHub pull request ${pr_url} for OpenSpec change issue-${ISSUE_NUMBER}."
+              --text "Agentic loop opened GitHub pull request ${pr_url} for OpenSpec change ${CHANGE} (spec review)."
           fi
 
       - name: Mark failed
@@ -106,4 +109,147 @@ jobs:
         shell: bash
         run: |
           gh issue edit "$ISSUE_NUMBER" --remove-label "agent:running" --add-label "agent:failed" || true
-          gh issue comment "$ISSUE_NUMBER" --body "The agent loop failed. Inspect workflow run ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID} and the local runner trace." || true
+          gh issue comment "$ISSUE_NUMBER" --body "The agent loop failed during proposal. Inspect workflow run ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID} and the local runner trace." || true
+
+  # Runs exactly one OpenSpec task slice and opens a pull request for it.
+  # Triggered by a human merging the spec pull request or a previous slice
+  # pull request. Merging the resulting pull request triggers the next slice.
+  slice:
+    if: >
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.head.repo.full_name == github.event.pull_request.base.repo.full_name &&
+      startsWith(github.event.pull_request.head.ref, 'agent/issue-')
+    runs-on: [self-hosted, agentic-loop]
+    timeout-minutes: 90
+    concurrency:
+      group: agentic-loop-${{ github.event.pull_request.head.ref }}
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ github.token }}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${{ vars.OTEL_EXPORTER_OTLP_ENDPOINT }}
+      OTEL_EXPORTER_OTLP_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_HEADERS }}
+      AGENTOPS_API_KEY: ${{ secrets.AGENTOPS_API_KEY }}
+      LOOP_AGENT_COMMAND: ${{ vars.LOOP_AGENT_COMMAND }}
+      JIRA_BASE_URL: ${{ vars.JIRA_BASE_URL }}
+      JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+      JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.base.ref }}
+          fetch-depth: 0
+
+      - name: Resolve issue and change
+        shell: bash
+        run: |
+          head_ref="${{ github.event.pull_request.head.ref }}"
+          if [[ ! "$head_ref" =~ ^agent/issue-([0-9]+)- ]]; then
+            echo "not an agent issue branch: $head_ref" >&2
+            exit 1
+          fi
+          issue_number="${BASH_REMATCH[1]}"
+          change="issue-${issue_number}"
+          metadata="openspec/changes/${change}/agentic-loop.json"
+          if [[ ! -f "$metadata" ]]; then
+            echo "missing OpenSpec change metadata: $metadata" >&2
+            exit 1
+          fi
+          jira_issue="$(python3 -c "import json; print(json.load(open('$metadata')).get('jira_issue', ''))")"
+          echo "ISSUE_NUMBER=$issue_number" >> "$GITHUB_ENV"
+          echo "LOOP_ISSUE_ID=$issue_number" >> "$GITHUB_ENV"
+          echo "CHANGE=$change" >> "$GITHUB_ENV"
+          echo "JIRA_ISSUE_KEY=$jira_issue" >> "$GITHUB_ENV"
+
+      - name: Install dependencies
+        run: |
+          npm install --prefix .agentic-loop/tools @fission-ai/openspec@1.4.1
+          python3 -m venv .agentic-loop/python
+          .agentic-loop/python/bin/pip install \
+            -r .agentic-loop/quality-requirements.txt \
+            -r .agentic-loop/requirements.txt
+
+      - name: Prepare slice
+        shell: bash
+        run: |
+          gh issue edit "$ISSUE_NUMBER" --remove-label "agent:spec-review" --add-label "agent:running" 2>/dev/null || true
+          gh issue edit "$ISSUE_NUMBER" --remove-label "agent:review" --add-label "agent:running" 2>/dev/null || true
+          git config user.name "agentic-loop[bot]"
+          git config user.email "agentic-loop[bot]@users.noreply.github.com"
+
+          status_json="$(./loopctl status --change "$CHANGE" --json)"
+          pending_before="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["remaining"])' <<<"$status_json")"
+          done_before="$(grep -c '^- \[x\]' "openspec/changes/$CHANGE/tasks.md" || true)"
+          current_task="$(python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["pending_tasks"][0] if d["pending_tasks"] else "")' <<<"$status_json")"
+
+          echo "SLICE_NUMBER=$((done_before + 1))" >> "$GITHUB_ENV"
+          echo "TOTAL_TASKS=$((done_before + pending_before))" >> "$GITHUB_ENV"
+          {
+            echo "CURRENT_TASK<<AGENT_TASK_EOF"
+            echo "$current_task"
+            echo "AGENT_TASK_EOF"
+          } >> "$GITHUB_ENV"
+
+      - name: Run one slice
+        shell: bash
+        run: |
+          ./loopctl run --change "$CHANGE" --max-slices 1 | tee /tmp/slice-output.txt
+          echo "RUN_ID=$(head -n1 /tmp/slice-output.txt)" >> "$GITHUB_ENV"
+          echo "REMAINING=$(tail -n1 /tmp/slice-output.txt | sed 's/remaining=//')" >> "$GITHUB_ENV"
+
+      - name: Publish slice pull request
+        id: publish
+        shell: bash
+        run: |
+          if [[ -z "$(git status --porcelain)" ]]; then
+            echo "Agent produced no changes" >&2
+            exit 1
+          fi
+          base="${{ github.event.pull_request.base.ref }}"
+          branch="agent/issue-${ISSUE_NUMBER}-slice-${SLICE_NUMBER}"
+          git switch -c "$branch"
+          git add -A
+          git commit -m "agent: ${CHANGE} slice ${SLICE_NUMBER}/${TOTAL_TASKS}"
+          git push --set-upstream origin "$branch"
+
+          changed_lines="$(git diff --shortstat "origin/${base}" "$branch" | python3 -c "
+          import re, sys
+          text = sys.stdin.read()
+          ins = re.search(r'(\d+) insertion', text)
+          dele = re.search(r'(\d+) deletion', text)
+          print((int(ins.group(1)) if ins else 0) + (int(dele.group(1)) if dele else 0))
+          ")"
+          max_pr_lines="$(python3 -c "import json; print(json.load(open('.agentic-loop/loop.json')).get('publication', {}).get('max_pr_lines', 400))")"
+
+          pr_url="$(gh pr create --base "$base" --head "$branch" \
+            --title "Agent slice ${SLICE_NUMBER}/${TOTAL_TASKS}: ${CURRENT_TASK} (#${ISSUE_NUMBER})" \
+            --body "Automated slice ${SLICE_NUMBER}/${TOTAL_TASKS} for #${ISSUE_NUMBER} (\`${CHANGE}\`). Human review is required. Merging this pull request triggers the next slice, if any.")"
+          echo "PR_URL=$pr_url" >> "$GITHUB_ENV"
+
+          if (( changed_lines > max_pr_lines )); then
+            gh pr comment "$pr_url" --body "This slice changed ${changed_lines} lines, above the configured limit of ${max_pr_lines} (\`publication.max_pr_lines\`). Consider asking the proposer to break this task into smaller slices for future changes."
+          fi
+
+      - name: Finalize slice
+        shell: bash
+        run: |
+          if [[ "$REMAINING" == "0" ]]; then
+            gh issue edit "$ISSUE_NUMBER" --remove-label "agent:running" --add-label "agent:done"
+            gh issue comment "$ISSUE_NUMBER" --body "Loop completed \`${CHANGE}\` (slice ${SLICE_NUMBER}/${TOTAL_TASKS}) and opened ${PR_URL}. No further slices remain."
+            jira_text="Agentic loop opened the final pull request ${PR_URL} for OpenSpec change ${CHANGE}."
+          else
+            gh issue edit "$ISSUE_NUMBER" --remove-label "agent:running" --add-label "agent:review"
+            gh issue comment "$ISSUE_NUMBER" --body "Loop completed slice ${SLICE_NUMBER}/${TOTAL_TASKS} of \`${CHANGE}\` and opened ${PR_URL}. ${REMAINING} slice(s) remain; merging this pull request starts the next slice."
+            jira_text="Agentic loop opened pull request ${PR_URL} for OpenSpec change ${CHANGE} (slice ${SLICE_NUMBER}/${TOTAL_TASKS}, ${REMAINING} remaining)."
+          fi
+          if [[ -n "$JIRA_ISSUE_KEY" ]]; then
+            ./loopctl jira-comment --issue "$JIRA_ISSUE_KEY" --text "$jira_text"
+          fi
+
+      - name: Mark failed
+        if: failure()
+        shell: bash
+        run: |
+          gh issue edit "$ISSUE_NUMBER" --remove-label "agent:running" --add-label "agent:failed" || true
+          gh issue comment "$ISSUE_NUMBER" --body "The agent loop failed during slice ${SLICE_NUMBER:-?}/${TOTAL_TASKS:-?} of \`${CHANGE:-the change}\`. Earlier slices remain merged on ${{ github.event.pull_request.base.ref }}. Inspect workflow run ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID} and the local runner trace." || true
