@@ -140,7 +140,7 @@ class OpenTelemetry:
                 resource=Resource.create(
                     {
                         "service.name": service_name,
-                        "service.version": "0.1.0",
+                        "service.version": "0.2.0",
                     }
                 )
             )
@@ -648,6 +648,7 @@ def command_propose(args: argparse.Namespace) -> int:
         "change": change,
         "parent_change": args.parent_change or "",
         "jira_issue": args.jira or "",
+        "issue": os.environ.get("LOOP_ISSUE_ID", ""),
         "created_at": now(),
     }
     write_json(change_dir / "agentic-loop.json", metadata)
@@ -1007,8 +1008,14 @@ def command_run(args: argparse.Namespace) -> int:
                     raise RuntimeError(
                         f"slice '{current_task}' failed after {max_attempts} attempts"
                     )
+                if args.max_slices and slice_number >= args.max_slices:
+                    break
 
-            if deep_get(config, "review.enabled", True):
+            remaining_tasks = len(pending_tasks(change))
+            is_complete = remaining_tasks == 0
+            review_enabled = deep_get(config, "review.enabled", True)
+            per_slice_review = deep_get(config, "review.per_slice", False)
+            if review_enabled and (is_complete or per_slice_review):
                 ctx.update(stage="review")
                 review_prompt = render_prompt(
                     "reviewer",
@@ -1034,17 +1041,33 @@ def command_run(args: argparse.Namespace) -> int:
                         "reviewer modified the working tree during a read-only stage"
                     )
 
-            ctx.update(stage="complete", status="succeeded")
-            telemetry.event("loop.outcome", {"agentic_loop.outcome": "succeeded"})
+            ctx.update(
+                stage="complete", status="succeeded", remaining_tasks=remaining_tasks
+            )
+            telemetry.event(
+                "loop.outcome",
+                {
+                    "agentic_loop.outcome": "succeeded",
+                    "agentic_loop.remaining_tasks": remaining_tasks,
+                },
+            )
             success = True
             if jira_issue:
                 with contextlib.suppress(Exception):
-                    jira_comment(
-                        jira_issue,
-                        f"Agentic loop `{run_id}` completed for OpenSpec change `{change}`. "
-                        "Verification passed; review branch publication follows in the repository workflow.",
-                    )
+                    if is_complete:
+                        jira_comment(
+                            jira_issue,
+                            f"Agentic loop `{run_id}` completed for OpenSpec change `{change}`. "
+                            "Verification passed; review branch publication follows in the repository workflow.",
+                        )
+                    else:
+                        jira_comment(
+                            jira_issue,
+                            f"Agentic loop `{run_id}` completed slice {slice_number} for "
+                            f"OpenSpec change `{change}`. {remaining_tasks} task(s) remain.",
+                        )
             print(run_id)
+            print(f"remaining={remaining_tasks}")
             return 0
     except Exception as exc:
         ctx.update(stage="failed", status="failed", error=str(exc))
@@ -1120,7 +1143,18 @@ def command_telemetry_test(_: argparse.Namespace) -> int:
     return 0
 
 
-def command_status(_: argparse.Namespace) -> int:
+def command_status(args: argparse.Namespace) -> int:
+    if args.change:
+        change = validate_change_name(args.change)
+        tasks = pending_tasks(change)
+        payload = {
+            "change": change,
+            "pending_tasks": tasks,
+            "remaining": len(tasks),
+            "is_complete": not tasks,
+        }
+        print(json.dumps(payload, indent=2))
+        return 0
     state_path = LOOP_DIR / "state.json"
     if not state_path.exists():
         print("no loop runs recorded")
@@ -1151,6 +1185,12 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser = subparsers.add_parser("run", help="run a bounded OpenSpec change")
     run_parser.add_argument("--change", required=True)
     run_parser.add_argument("--jira")
+    run_parser.add_argument(
+        "--max-slices",
+        type=int,
+        default=0,
+        help="stop after N task slices (0 = unlimited)",
+    )
     run_parser.set_defaults(handler=command_run)
     doctor_parser = subparsers.add_parser(
         "doctor", help="check installation and runtime"
@@ -1159,6 +1199,8 @@ def build_parser() -> argparse.ArgumentParser:
     telemetry_parser = subparsers.add_parser("telemetry-test", help="emit a test trace")
     telemetry_parser.set_defaults(handler=command_telemetry_test)
     status_parser = subparsers.add_parser("status", help="show the latest run state")
+    status_parser.add_argument("--change")
+    status_parser.add_argument("--json", action="store_true")
     status_parser.set_defaults(handler=command_status)
     jira_parser = subparsers.add_parser(
         "jira-comment", help="append loop evidence to a Jira issue"

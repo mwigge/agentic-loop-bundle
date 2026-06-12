@@ -15,7 +15,11 @@
   },
   "review": {
     "enabled": true,
-    "required": false
+    "required": false,
+    "per_slice": false
+  },
+  "publication": {
+    "max_pr_lines": 400
   },
   "telemetry": {
     "service_name": "agentic-loop",

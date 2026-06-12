@@ -28,4 +28,12 @@ Add an integration and end-state section to the design: define the target archit
 cross-task contracts, dependency order, migration path, compatibility constraints, and
 final acceptance test. Tasks must reference those shared contracts rather than define
 isolated local solutions.
+
+Each task slice becomes its own pull or merge request, reviewed and merged on its
+own before the next slice runs. Keep each slice to roughly 200 changed lines or
+fewer, including its test, so the resulting diff stays easy to review. If the
+requested outcome cannot be decomposed into slices of that size without leaving
+incoherent intermediate states, create a parent change and one or more
+specification subloops (`--parent-change`) instead of writing oversized tasks.
+
 Do not modify implementation files. Do not archive the change.

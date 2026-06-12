@@ -125,6 +125,170 @@ advances when:
 Verification is cumulative. The loop does not test a slice in isolation and
 does not allow locally convenient interfaces that contradict the final design.
 
+## One pull or merge request per slice
+
+Each implemented task slice is published as its own pull or merge request,
+reviewed and merged independently before the next slice runs. This keeps
+AI-generated diffs small (the proposer targets roughly 200 changed lines per
+slice; `publication.max_pr_lines` in `loop.json`, default 400, flags larger
+slices on the resulting pull request) and gives a human a merge gate at every
+step instead of one large diff at the end.
+
+```text
+issue + agent:ready
+  -> propose job: opens a spec-only pull request (proposal, specs, design, tasks)
+     -> label agent:spec-review
+     -> human merges the spec pull request
+  -> slice job (runs on merge of any agent/issue-* pull request):
+     -> implements the next unchecked task (loopctl run --max-slices 1)
+     -> opens a pull request for that slice
+     -> remaining slices > 0: label agent:review; merging starts the next slice
+     -> remaining slices == 0: holistic review runs; label agent:done
+```
+
+| Label | Meaning |
+|---|---|
+| `agent:queued` | Task proposed for an agent loop |
+| `agent:ready` | Approved by a maintainer; starts the propose job |
+| `agent:running` | A propose or slice job is active |
+| `agent:spec-review` | Spec pull request needs review; merging starts slice 1 |
+| `agent:review` | A slice pull request needs review; merging starts the next slice |
+| `agent:done` | All slices implemented and published |
+| `agent:failed` | Loop needs human attention |
+
+**Recovery from a mid-change failure.** Earlier slices are already merged,
+reviewed independently, and verified on their own — the default branch is not
+broken. To resume: fix the issue manually and re-run the slice job (push to the
+default branch again, or re-trigger), or `./loopctl propose` a new change for
+the remaining `tasks.md` items.
+
+Set `"review": {"per_slice": true}` in `loop.json` to run the independent
+reviewer on every slice pull request instead of only the final one.
+
+## Example: rate limit for a public API
+
+The same change — add a per-IP rate limit to a public `/search` endpoint,
+returning `429 Too Many Requests` with `Retry-After` when exceeded — walked
+through end to end for three setups: GitHub with Jira, GitLab with Jira, and a
+plain local loop with neither.
+
+In all three, the proposal stage produces a `tasks.md` such as:
+
+```markdown
+## 1. Add a token-bucket rate limiter for /search
+- [ ] Add a failing test asserting the 11th request within a second from one
+      IP returns 429 with a Retry-After header
+- [ ] Add a RateLimiter middleware backed by an in-memory token bucket and
+      wire it into the /search route
+- [ ] Add RATE_LIMIT_PER_SECOND to configuration (default 10)
+
+## 2. Return a structured 429 response body
+- [ ] Add a failing test asserting the 429 body matches
+      {"error": "rate_limited", "retry_after": <int>}
+- [ ] Implement the structured error body and Retry-After header
+
+## 3. Document the limit and add an end-to-end smoke test
+- [ ] Add a failing end-to-end test that sends 11 requests to /search and
+      checks the 11th response
+- [ ] Document RATE_LIMIT_PER_SECOND in docs/api.md
+```
+
+### GitHub + Jira
+
+1. A product owner files Jira issue `ENG-742`, "Add a rate limit to the public
+   `/search` endpoint", with the description above as the task.
+2. A maintainer opens a GitHub **Agent loop task** issue #742 referencing
+   `ENG-742` and applies `agent:ready` (or starts the `propose` job directly
+   via `workflow_dispatch` with `jira_issue=ENG-742`).
+3. The `propose` job runs
+   `./loopctl propose --change issue-742 --jira ENG-742` — with no `--task`,
+   it pulls the summary and description straight from `ENG-742`. It pushes
+   `openspec/changes/issue-742/` on `agent/issue-742-spec`, opens **PR #743**
+   "Agent spec: issue #742" labeled `agent:spec-review`, and comments on
+   `ENG-742`: "Agentic loop opened GitHub pull request `.../pull/743` for
+   OpenSpec change `issue-742` (spec review)."
+4. A maintainer reviews the proposal, specs, design, and the `tasks.md` above,
+   then merges #743.
+5. The `slice` job runs `./loopctl run --change issue-742 --max-slices 1` and
+   opens **PR #744** "Agent slice 1/3: Add a token-bucket rate limiter for
+   /search (#742)" (~85 changed lines, `agent:review`), commenting on
+   `ENG-742`: "Agentic loop opened pull request `.../pull/744` for OpenSpec
+   change `issue-742` (slice 1/3, 2 remaining)."
+6. Merging #744 starts slice 2: **PR #745** "Agent slice 2/3: Return a
+   structured 429 response body (#742)" (~40 changed lines, `agent:review`),
+   with a matching Jira comment ("slice 2/3, 1 remaining").
+7. Merging #745 starts the final slice. `remaining` reaches `0`, so the
+   holistic reviewer runs across the cumulative diff before **PR #746** "Agent
+   slice 3/3: Document the limit and add an end-to-end smoke test (#742)"
+   (~30 changed lines) is opened. The Jira comment reads "Agentic loop opened
+   the final pull request `.../pull/746` for OpenSpec change `issue-742`."
+8. Merging #746 labels issue #742 `agent:done`; the maintainer resolves
+   `ENG-742`.
+
+### GitLab + Jira
+
+1. A product owner files Jira issue `ENG-900` with the description above.
+2. A maintainer starts a pipeline with `LOOP_ISSUE_IID=58` and
+   `LOOP_JIRA_ISSUE=ENG-900` set (GitLab issue `#58` tracks the same work).
+3. `agentic-loop-propose` runs
+   `./loopctl propose --change issue-58 --jira ENG-900`, pulling the task from
+   `ENG-900`. It pushes `openspec/changes/issue-58/` on `agent/issue-58-spec`,
+   opens **MR !59** "Agent spec: issue #58" labeled `agent:spec-review`, and
+   comments on `ENG-900`: "Agentic loop opened GitLab merge request
+   `.../merge_requests/59` for OpenSpec change `issue-58` (spec review)."
+4. A maintainer reviews the proposal, specs, design, and `tasks.md`, then
+   merges `!59` with a merge commit (not fast-forward).
+5. `agentic-loop-slice` runs on that push to the default branch, resolves the
+   merged commit back to `!59`, confirms its source branch matches
+   `agent/issue-58-*`, runs `./loopctl run --change issue-58 --max-slices 1`,
+   and opens **MR !60** "Agent slice 1/3: Add a token-bucket rate limiter for
+   /search (#58)" (~85 changed lines, `agent:review`), commenting on `ENG-900`:
+   "...opened merge request `.../merge_requests/60` for OpenSpec change
+   `issue-58` (slice 1/3, 2 remaining)."
+6. Merging `!60` (again as a merge commit) triggers **MR !61** "Agent slice
+   2/3: Return a structured 429 response body (#58)" (~40 changed lines,
+   `agent:review`), with a matching Jira comment ("slice 2/3, 1 remaining").
+7. Merging `!61` triggers the final slice. `remaining` reaches `0`, the
+   holistic reviewer runs, and **MR !62** "Agent slice 3/3: Document the limit
+   and add an end-to-end smoke test (#58)" (~30 changed lines) is opened.
+   Merging it labels issue `#58` `agent:done`, and the Jira comment reads
+   "Agentic loop opened the final merge request `.../merge_requests/62` for
+   OpenSpec change `issue-58`."
+
+### Local only, no GitHub, GitLab, or Jira
+
+The same `tasks.md` can be worked through from any shell, with no issue
+tracker, CI, or Jira involved:
+
+```bash
+./loopctl propose \
+  --change add-rate-limit \
+  --task "Add a per-IP rate limit to /search, returning 429 with Retry-After"
+
+./loopctl run --change add-rate-limit --max-slices 1
+# 3f9a7b2e-1c4d-4f8a-9e2b-7d6c5a4b3c21
+# remaining=2
+
+./loopctl status --change add-rate-limit --json
+# {
+#   "change": "add-rate-limit",
+#   "pending_tasks": [
+#     "Return a structured 429 response body",
+#     "Document the limit and add an end-to-end smoke test"
+#   ],
+#   "remaining": 2,
+#   "is_complete": false
+# }
+
+./loopctl run --change add-rate-limit --max-slices 1
+./loopctl run --change add-rate-limit --max-slices 1
+# remaining=0
+```
+
+Commit and open a pull or merge request after each `--max-slices 1` run if the
+slice-per-PR workflow is wanted, or omit `--max-slices` to let one run
+implement every remaining task before review.
+
 ## Required engineering policy
 
 The generated gate enforces:
@@ -149,9 +313,16 @@ are hashed before implementation; an agent cannot weaken them during a run.
 4. Create an **Agent loop task** issue.
 5. A trusted maintainer applies `agent:ready`.
 
-The workflow authorizes the trigger, creates `openspec/changes/issue-<number>`,
-runs all verified slices on an `agent/issue-*` branch, and opens a pull request.
-It never merges or pushes to the default branch.
+The `propose` job authorizes the trigger, creates `openspec/changes/issue-<number>`
+on `agent/issue-<number>-spec`, and opens a spec-only pull request labeled
+`agent:spec-review`. It never merges or pushes to the default branch.
+
+The `slice` job runs whenever a human merges a pull request whose head branch
+starts with `agent/issue-`. It implements the next unchecked task
+(`loopctl run --max-slices 1`) on a new `agent/issue-<number>-slice-<n>` branch
+and opens a pull request for that slice. See
+[One pull or merge request per slice](#one-pull-or-merge-request-per-slice) for
+the full lifecycle and labels.
 
 ## GitLab workflow
 
@@ -169,8 +340,20 @@ start a manual, scheduled, or API pipeline with:
 LOOP_ISSUE_IID=123
 ```
 
-The job creates `openspec/changes/issue-123`, runs the bounded slices, and opens
-a merge request.
+The `agentic-loop-propose` job creates `openspec/changes/issue-123` on
+`agent/issue-123-spec` and opens a spec-only merge request labeled
+`agent:spec-review`.
+
+The `agentic-loop-slice` job runs on every default-branch push. It checks
+whether the new commit belongs to a merged merge request from an
+`agent/issue-*` branch; if not, it is a no-op. When it matches, it implements
+the next unchecked task (`loopctl run --max-slices 1`) on a new
+`agent/issue-123-slice-<n>` branch and opens a merge request for that slice.
+This requires a merge method that produces a merge commit (not fast-forward),
+so the merged commit can be resolved back to its merge request via the GitLab
+API. See
+[One pull or merge request per slice](#one-pull-or-merge-request-per-slice) for
+the full lifecycle and labels.
 
 ## Jira synchronization
 

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 set -euo pipefail
 
-VERSION="0.1.0"
+VERSION="0.2.0"
 REPOSITORY="${AGENTIC_LOOP_REPOSITORY:-mwigge/agentic-loop-bundle}"
 REF="${AGENTIC_LOOP_REF:-main}"
 PLATFORM=""
