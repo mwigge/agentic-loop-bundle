@@ -7,7 +7,7 @@ lint:
 	bash -n templates/common/loopctl templates/common/.agentic-loop/bin/verify.sh
 	bash -n templates/common/.agentic-loop/bin/test.sh templates/common/.agentic-loop/bin/smoke.sh
 	bash -n examples/signoz/signoz.sh
-	python3 -m py_compile runtime/loopctl.py runtime/quality_gate.py tests/otel_receiver.py tests/fake-openspec.py tests/test_jira.py
+	python3 -m py_compile runtime/loopctl.py runtime/quality_gate.py tests/otel_receiver.py tests/fake-openspec.py tests/test_jira.py tests/test_loopctl_stream.py
 	@if command -v ruff >/dev/null 2>&1; then ruff format --check runtime tests && ruff check runtime tests; fi
 	@test -z "$$(find docs/images -maxdepth 1 -type f -name '*.svg' -print)"
 	@test -z "$$(rg -l '\\.svg[)]' README.md docs || true)"
@@ -16,6 +16,7 @@ test:
 	bash tests/smoke.sh
 	bash tests/quality-gate.sh
 	python3 tests/test_jira.py
+	python3 tests/test_loopctl_stream.py
 
 test-docker:
 	bash tests/docker-smoke.sh
