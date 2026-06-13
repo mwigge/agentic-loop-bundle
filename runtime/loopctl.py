@@ -655,6 +655,8 @@ def run_agent(
             env={
                 **telemetry.subprocess_environment(f"agentic-loop-{stage}"),
                 "AGENTIC_LOOP_STAGE": stage,
+                "OPENSPEC_TELEMETRY": "0",
+                "DO_NOT_TRACK": "1",
             },
         )
     write_text(output_path, process.stdout)

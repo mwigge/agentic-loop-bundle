@@ -98,6 +98,28 @@ def test_run_agent_writes_stdout_and_stderr_files() -> None:
         assert output_path.with_suffix(".stderr.txt").read_text() == "warn\n"
 
 
+def test_run_agent_disables_openspec_telemetry() -> None:
+    with tempfile.TemporaryDirectory() as run_dir_name:
+        run_dir = pathlib.Path(run_dir_name)
+        telemetry = loopctl.OpenTelemetry(
+            loopctl.JsonlTelemetry("test-run", run_dir, {}), "test-service"
+        )
+        output_path = run_dir / "agent.txt"
+        with mock.patch("sys.stderr", io.StringIO()):
+            loopctl.run_agent(
+                telemetry,
+                'printf "%s=%s\\n" OPENSPEC_TELEMETRY "$OPENSPEC_TELEMETRY" '
+                'DO_NOT_TRACK "$DO_NOT_TRACK"',
+                "propose",
+                "",
+                output_path,
+                5,
+            )
+        env_lines = output_path.read_text().splitlines()
+        assert "OPENSPEC_TELEMETRY=0" in env_lines
+        assert "DO_NOT_TRACK=1" in env_lines
+
+
 def main() -> int:
     for name, value in sorted(globals().items()):
         if name.startswith("test_") and callable(value):
