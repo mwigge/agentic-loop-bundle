@@ -14,6 +14,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 import urllib.error
@@ -536,6 +537,94 @@ def is_test_path(path: str) -> bool:
     )
 
 
+HEARTBEAT_SECONDS = float(os.environ.get("LOOP_HEARTBEAT_SECONDS", "30"))
+
+
+def stream_subprocess(
+    command: str,
+    stage: str,
+    prompt: str | None,
+    timeout_seconds: int,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Run `command` via the shell, streaming stdout/stderr to stderr live
+    while still capturing them, and emit a heartbeat line if the process
+    produces no output for HEARTBEAT_SECONDS so long agent calls stay visible."""
+    process = subprocess.Popen(
+        command,
+        cwd=ROOT,
+        stdin=subprocess.PIPE if prompt is not None else None,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        shell=True,
+        executable="/bin/bash",
+        env=env,
+        bufsize=1,
+    )
+
+    stdout_chunks: list[str] = []
+    stderr_chunks: list[str] = []
+    activity = threading.Event()
+
+    def pump(stream: Any, chunks: list[str]) -> None:
+        for line in stream:
+            chunks.append(line)
+            activity.set()
+            sys.stderr.write(
+                f"[{stage}] {line}" if line.endswith("\n") else f"[{stage}] {line}\n"
+            )
+            sys.stderr.flush()
+        stream.close()
+
+    readers = [
+        threading.Thread(
+            target=pump, args=(process.stdout, stdout_chunks), daemon=True
+        ),
+        threading.Thread(
+            target=pump, args=(process.stderr, stderr_chunks), daemon=True
+        ),
+    ]
+    for reader in readers:
+        reader.start()
+
+    if prompt is not None:
+
+        def feed() -> None:
+            with contextlib.suppress(BrokenPipeError):
+                process.stdin.write(prompt)
+                process.stdin.close()
+
+        threading.Thread(target=feed, daemon=True).start()
+
+    started = time.monotonic()
+    try:
+        while True:
+            elapsed = time.monotonic() - started
+            remaining = timeout_seconds - elapsed
+            if remaining <= 0:
+                process.kill()
+                process.wait()
+                raise subprocess.TimeoutExpired(command, timeout_seconds)
+            try:
+                process.wait(timeout=min(HEARTBEAT_SECONDS, remaining))
+                break
+            except subprocess.TimeoutExpired:
+                if not activity.is_set():
+                    print(
+                        f"[{stage}] still running ({round(time.monotonic() - started)}s elapsed)...",
+                        file=sys.stderr,
+                    )
+                activity.clear()
+    finally:
+        for reader in readers:
+            reader.join()
+
+    return subprocess.CompletedProcess(
+        command, process.returncode, "".join(stdout_chunks), "".join(stderr_chunks)
+    )
+
+
 def run_agent(
     telemetry: OpenTelemetry,
     command: str,
@@ -553,16 +642,16 @@ def run_agent(
         "agentic_loop.prompt_bytes": len(prompt.encode()),
     }
     started = time.monotonic()
+    print(
+        f"[{stage}] running {command.split()[0]} (timeout {timeout_seconds}s)",
+        file=sys.stderr,
+    )
     with telemetry.span("gen_ai.client.operation", attributes):
-        process = subprocess.run(
+        process = stream_subprocess(
             command,
-            cwd=ROOT,
-            input=prompt,
-            text=True,
-            shell=True,
-            executable="/bin/bash",
-            capture_output=True,
-            timeout=timeout_seconds,
+            stage,
+            prompt,
+            timeout_seconds,
             env={
                 **telemetry.subprocess_environment(f"agentic-loop-{stage}"),
                 "AGENTIC_LOOP_STAGE": stage,
@@ -571,12 +660,17 @@ def run_agent(
     write_text(output_path, process.stdout)
     if process.stderr:
         write_text(output_path.with_suffix(".stderr.txt"), process.stderr)
+    duration_ms = round((time.monotonic() - started) * 1000, 2)
+    print(
+        f"[{stage}] done in {duration_ms / 1000:.1f}s (exit {process.returncode})",
+        file=sys.stderr,
+    )
     telemetry.event(
         "agent.completed",
         {
             "agentic_loop.stage": stage,
             "agentic_loop.exit_code": process.returncode,
-            "agentic_loop.duration_ms": round((time.monotonic() - started) * 1000, 2),
+            "agentic_loop.duration_ms": duration_ms,
             "agentic_loop.output_bytes": len(process.stdout.encode()),
         },
     )
@@ -589,17 +683,15 @@ def run_verification(
     output_path: pathlib.Path,
     timeout_seconds: int,
 ) -> int:
+    started = time.monotonic()
+    print(f"[verify] running: {command} (timeout {timeout_seconds}s)", file=sys.stderr)
     with telemetry.span("loop.verify", {"agentic_loop.verify.command": command}):
-        process = subprocess.run(
-            command,
-            cwd=ROOT,
-            text=True,
-            shell=True,
-            executable="/bin/bash",
-            capture_output=True,
-            timeout=timeout_seconds,
-        )
+        process = stream_subprocess(command, "verify", None, timeout_seconds)
     write_text(output_path, process.stdout + process.stderr)
+    print(
+        f"[verify] done in {round(time.monotonic() - started, 1)}s (exit {process.returncode})",
+        file=sys.stderr,
+    )
     return process.returncode
 
 
@@ -756,7 +848,9 @@ def command_run(args: argparse.Namespace) -> int:
         )
     run_openspec("validate", change)
     spec_context = openspec_context(change)
-    task = f"Implement the OpenSpec change `{change}` as specified in the context below."
+    task = (
+        f"Implement the OpenSpec change `{change}` as specified in the context below."
+    )
     change_metadata_path = change_dir / "agentic-loop.json"
     change_metadata = (
         load_json(change_metadata_path) if change_metadata_path.exists() else {}
