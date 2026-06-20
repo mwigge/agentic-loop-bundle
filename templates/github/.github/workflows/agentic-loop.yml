@@ -213,13 +213,7 @@ jobs:
           git commit -m "agent: ${CHANGE} slice ${SLICE_NUMBER}/${TOTAL_TASKS}"
           git push --set-upstream origin "$branch"
 
-          changed_lines="$(git diff --shortstat "origin/${base}" "$branch" | python3 -c "
-          import re, sys
-          text = sys.stdin.read()
-          ins = re.search(r'(\d+) insertion', text)
-          dele = re.search(r'(\d+) deletion', text)
-          print((int(ins.group(1)) if ins else 0) + (int(dele.group(1)) if dele else 0))
-          ")"
+          changed_lines="$(git diff --shortstat "origin/${base}" "$branch" | grep -oE '[0-9]+ (insertion|deletion)' | awk '{s+=$1} END{print s+0}')"
           max_pr_lines="$(python3 -c "import json; print(json.load(open('.agentic-loop/loop.json')).get('publication', {}).get('max_pr_lines', 400))")"
 
           pr_url="$(gh pr create --base "$base" --head "$branch" \

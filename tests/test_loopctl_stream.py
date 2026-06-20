@@ -120,13 +120,12 @@ def test_run_agent_disables_openspec_telemetry() -> None:
         assert "DO_NOT_TRACK=1" in env_lines
 
 
-def main() -> int:
-    for name, value in sorted(globals().items()):
-        if name.startswith("test_") and callable(value):
-            value()
-    print("loopctl stream tests passed")
-    return 0
-
-
 if __name__ == "__main__":
-    raise SystemExit(main())
+    test_stream_subprocess_streams_and_captures_output()
+    test_stream_subprocess_forwards_stdin_prompt()
+    test_stream_subprocess_emits_heartbeat_when_idle()
+    test_stream_subprocess_times_out_and_kills_process()
+    test_run_verification_writes_combined_output()
+    test_run_agent_writes_stdout_and_stderr_files()
+    test_run_agent_disables_openspec_telemetry()
+    print("loopctl stream tests passed")

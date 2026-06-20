@@ -155,13 +155,7 @@ agentic-loop-slice:
       git commit -m "agent: $LOOP_CHANGE slice ${slice_number}/${total_tasks}"
       git push "https://oauth2:${GITLAB_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git" "$branch"
 
-      changed_lines="$(git diff --shortstat "origin/${CI_DEFAULT_BRANCH}" "$branch" | python3 -c "
-      import re, sys
-      text = sys.stdin.read()
-      ins = re.search(r'(\d+) insertion', text)
-      dele = re.search(r'(\d+) deletion', text)
-      print((int(ins.group(1)) if ins else 0) + (int(dele.group(1)) if dele else 0))
-      ")"
+      changed_lines="$(git diff --shortstat "origin/${CI_DEFAULT_BRANCH}" "$branch" | grep -oE '[0-9]+ (insertion|deletion)' | awk '{s+=$1} END{print s+0}')"
       max_pr_lines="$(python3 -c "import json; print(json.load(open('.agentic-loop/loop.json')).get('publication', {}).get('max_pr_lines', 400))")"
 
       mr_json="$(curl --fail --silent --show-error --request POST --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
